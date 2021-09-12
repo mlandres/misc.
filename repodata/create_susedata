@@ -25,10 +25,27 @@ Usage: $(basename $0) PRIMARY_XML [KEYWORD]
 Translate file PRIMARY_XML into a 'susedata.xml' sskeleton. Optionally inject
 a KEYWORD for each package. An existing 'susedata.xml' is overwritten.
 
+If KEYWORD is the name of an existing file, the keyword definition is read from
+there. Otherwise the value of KEYWORD is assigned as keyword to all packages.
+
+In a keyword definition file empty lines and lines starting with # are ignored.
+Lines may contain exactly 2 words: a package name and the keyword to assign to
+this package in case it occurs in the PRIMARY_XML. At most one line may contain
+a single word, defining the default keyword to assign to those packages which do
+not have a separate definition line. Otherwise these packages will have no
+keyword assigned.
+
 Afterwards 'modifyrepo --mdtype "susedata"' (package: createrepo) can be used to
 add 'susedata.xml' to the repo metadata.
 
+Usecase: Define the vendor support level for packages. On SLES based systems
+zypper will show packages with unknown support status as well as packages which
+claim to be unsupported or need and additional contact with the packages vendor.
+
+See https://en.opensuse.org/openSUSE:Standards_Rpm_Metadata for more info.
+
 Example: $(basename $0) primary.xml support_unsupported
+         VERBOSE=1 $(basename $0) primary.xml support_unsupported
 EOF
 }
 
@@ -52,6 +69,12 @@ PRIMARY="$1"
 }
 
 KEYWORD="$2"
+if [ -s "$KEYWORD" ]; then
+  KEYWORD_VAR="KEYWORDFILE"
+else
+  KEYWORD_VAR="KEYWORD"
+fi
+
 
 SUSEDATA="susedata.xml"
 SUSEDATA_TMP="$SUSEDATA.$$"
@@ -63,14 +86,49 @@ trap "[ ! -e "$SUSEDATA_TMP" ] || rm -v -f -- '$SUSEDATA_TMP'" 0 1 2 3 9 13 15
 echo "prepare '$SUSEDATA_TMP'"
 
 cat_decompress "$PRIMARY" |
-  awk -v KEYWORD="$KEYWORD" -v SUSEDATA="$SUSEDATA_TMP" '
+  awk -v "$KEYWORD_VAR"="$KEYWORD" -v SUSEDATA="$SUSEDATA_TMP" -v VERBOSE="$VERBOSE" '
     BEGIN {
-      verbose = 1
+      kwd[""] = KEYWORD # default; kwd[name] may be assigned from file
+      if ( KEYWORDFILE ) readkeyworddef( KEYWORDFILE )
     }
+    function readkeyworddef( inp ) {
+      checkok = 1 # bool
+      while ( getline <inp > 0 ) {
+        if ( !NF || match($1,"^#") ) continue # empty or comment
+        if ( NF == 1 ) {
+	  if ( kwd[""] ) {
+	    printf( "%s: Multiple default keywords defined. Found `%s` and now `%s`.\n", inp, kwd[""], $1 )> "/dev/stderr"
+	    checkok = 0
+	  } else
+	    kwd[""] = $1
+        }
+        else if ( NF == 2 ) {
+	  if ( $1 in kwd ) {
+	    printf( "%s: Multiple keywords defined for `%s`. Found `%s` and now `%s`.\n", inp, $1, kwd[$1], $2 )> "/dev/stderr"
+	    checkok = 0
+	  } else
+	    kwd[$1] = $2
+        }
+        else {
+	  printf( "%s: Keyword definition line has more than 2 words: %s \n", inp, $0 )> "/dev/stderr"
+	  checkok = 0
+        }
+      }
+      if ( ! checkok ) {
+	printf( "%s: Exiting.\n", inp )> "/dev/stderr"
+	exit 10
+      }
+    }
+
     function tagvalue( l ) { # get value from "<tag>value</tag>"
       sub( "^[^>]*>", "", l )
       sub( "<[^<]*$", "", l )
       return l
+    }
+
+    function getkeyword( n ) {
+      if ( n in kwd ) return kwd[n]
+      return kwd[""]
     }
 
     function writeoutcheck() {
@@ -83,7 +141,7 @@ cat_decompress "$PRIMARY" |
       }
       for ( t in pkg ) {
 	if ( ! length(pkg[t]) ) {
-	  printf( "L%d: Package tag '%s' is empty.\n", NR, t )> "/dev/stderr"
+	  printf( "L%d: Package tag `%s` is empty.\n", NR, t )> "/dev/stderr"
 	  return false
 	}
       }
@@ -93,17 +151,18 @@ cat_decompress "$PRIMARY" |
     function writeout() {
       if ( ! writeoutcheck() ) {
 	printf( "L%d: Exiting at %s.%s\n", NR, pkg["n"], pkg["a"] )> "/dev/stderr"
-	exit 10
+	exit 11
       }
-      if ( verbose ) printf( "- %s.%s", pkg["n"], pkg["a"], KEYWORD )
+      k = getkeyword( pkg["n"] )
+      if ( VERBOSE ) printf( "- %s.%s", pkg["n"], pkg["a"], k )
       printf( "  <package pkgid=\"%s\" name=\"%s\" arch=\"%s\">\n", pkg["c"], pkg["n"], pkg["a"] )>SUSEDATA
       printf( "  %s\n", pkg["v"] )>SUSEDATA
-      if ( KEYWORD ) {
-	if ( verbose ) printf( " : %s", KEYWORD )
-	printf( "    <keyword>%s</keyword>\n", KEYWORD )>SUSEDATA
+      if ( k ) {
+	if ( VERBOSE ) printf( " : %s", k )
+	printf( "    <keyword>%s</keyword>\n", k )>SUSEDATA
       }
       printf( "  </package>\n" )>SUSEDATA
-      if ( verbose ) printf( "\n" )
+      if ( VERBOSE ) printf( "\n" )
     }
 
 
@@ -121,6 +180,7 @@ cat_decompress "$PRIMARY" |
     /^<\/metadata>/  { print( "</susedata>" )>SUSEDATA }
   '
 
+# we rely on `set -e`, i.e. here we're sure awk etc. succeeded
 [ ! -s "$SUSEDATA_TMP" ] || {
     mv -v "$SUSEDATA_TMP" "$SUSEDATA"
 }
