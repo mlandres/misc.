@@ -64,6 +64,9 @@ echo "prepare '$SUSEDATA_TMP'"
 
 cat_decompress "$PRIMARY" |
   awk -v KEYWORD="$KEYWORD" -v SUSEDATA="$SUSEDATA_TMP" '
+    BEGIN {
+      verbose = 1
+    }
     function tagvalue( l ) { # get value from "<tag>value</tag>"
       sub( "^[^>]*>", "", l )
       sub( "<[^<]*$", "", l )
@@ -92,18 +95,15 @@ cat_decompress "$PRIMARY" |
 	printf( "L%d: Exiting at %s.%s\n", NR, pkg["n"], pkg["a"] )> "/dev/stderr"
 	exit 10
       }
-      # verbose:
-      printf( "- %s.%s", pkg["n"], pkg["a"], KEYWORD )
+      if ( verbose ) printf( "- %s.%s", pkg["n"], pkg["a"], KEYWORD )
       printf( "  <package pkgid=\"%s\" name=\"%s\" arch=\"%s\">\n", pkg["c"], pkg["n"], pkg["a"] )>SUSEDATA
       printf( "  %s\n", pkg["v"] )>SUSEDATA
       if ( KEYWORD ) {
-	# verbose:
-	printf( " : %s", KEYWORD )
+	if ( verbose ) printf( " : %s", KEYWORD )
 	printf( "    <keyword>%s</keyword>\n", KEYWORD )>SUSEDATA
       }
       printf( "  </package>\n" )>SUSEDATA
-      # verbose:
-      printf( "\n" )
+      if ( verbose ) printf( "\n" )
     }
 
 
